@@ -41,6 +41,10 @@ A comprehensive pipeline designed for high-pacing and sensory-friendly video pro
    ```bash
    pip install -r requirements.txt
    ```
+4. **Font Setup:**
+   Download the **"Orange Juice"** typeface.
+   - Place the file `orange juice 2.0.ttf` into a folder named `fonts/` in the project root.
+   - **Licensing Notice:** This typeface is **FREE for non-commercial work only**. For commercial use, please pay **$5** at [www.brittneymurphydesign.com](http://www.brittneymurphydesign.com).
 
 ### Configuration
 Create a `.env` file in the root directory and add your Gemini API Key:

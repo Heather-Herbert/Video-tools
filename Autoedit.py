@@ -15,9 +15,10 @@ from moviepy.audio.fx import AudioFadeIn, AudioFadeOut
 # --- CONFIGURATION & ENV ---
 ENV_PATH = ".env"
 load_dotenv(ENV_PATH)
-FONT_URL = "https://www.1001freefonts.com/d/6845/orange-juice.zip"
 FONT_DIR = "fonts"
 SHORTS_DIR = "shorts"
+# The user manually provides the font: "orange juice 2.0.ttf"
+FONT_FILENAME = "orange juice 2.0.ttf"
 
 
 def setup_assets():
@@ -28,18 +29,18 @@ def setup_assets():
     if not os.path.exists(FONT_DIR):
         os.makedirs(FONT_DIR)
         
-    font_path = os.path.join(FONT_DIR, "orange-juice.ttf")
+    font_path = os.path.join(FONT_DIR, FONT_FILENAME)
+    
+    print("\n--- FONT LICENSING NOTICE ---")
+    print("The 'Orange Juice' typeface is FREE for non-commercial work only.")
+    print("For commercial use, please pay $5 at www.brittneymurphydesign.com.")
+    print("-----------------------------\n")
+
     if not os.path.exists(font_path):
-        print(f"Downloading font: {FONT_URL}...")
-        r = requests.get(FONT_URL)
-        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-            # Find the .ttf file in the zip
-            for name in z.namelist():
-                if name.lower().endswith(".ttf"):
-                    with open(font_path, "wb") as f:
-                        f.write(z.read(name))
-                    print(f"-> Font saved to: {font_path}")
-                    break
+        print(f"-> Error: Font not found at {font_path}")
+        print(f"Please place '{FONT_FILENAME}' in the '{FONT_DIR}' directory.")
+        raise FileNotFoundError(f"Missing font: {font_path}")
+        
     return font_path
 
 
