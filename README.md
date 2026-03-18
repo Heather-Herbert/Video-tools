@@ -17,9 +17,6 @@ A comprehensive pipeline designed for high-pacing and sensory-friendly video pro
 - Quickly strips backgrounds from images (PNG/JPG) using the `rembg` library.
 - Ideal for creating thumbnails or speaker overlays.
 
-### 3. Video to Transcript (`video2text.py`)
-- A lightweight utility to extract audio and generate a raw text transcript using OpenAI Whisper.
-
 ---
 
 ## 🚀 Getting Started
