@@ -1,0 +1,12 @@
+# Core Dependencies
+openai-whisper
+moviepy>=2.0.0
+google-genai
+python-dotenv
+numpy
+requests
+Pillow
+rembg
+
+# Utility
+tqdm

@@ -1,0 +1,31 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Environment Variables
+.env
+
+# Project Specific
+fonts/
+shorts/
+temp_audio.wav
+*_finalised.mp4
+*.srt
+youtube_metadata.txt
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
