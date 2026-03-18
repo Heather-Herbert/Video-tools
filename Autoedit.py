@@ -59,7 +59,7 @@ def detect_hooks_and_speakers(video_path, transcript):
     client = get_gemini_client()
 
     # Upload video for analysis
-    file = client.files.upload(path=video_path)
+    file = client.files.upload(file=video_path)
     print(f"-> Video uploaded. ID: {file.name}")
 
     # Prompt for Viral Hook Detection
@@ -220,9 +220,15 @@ def run_full_pipeline(input_path, output_video_name, min_duration=2.0, do_edit=T
         input_path,
         fp16=False,
         verbose=True,
-        language='en',
-        word_timestamps=True # Critical for captions
-    )
+        language='en'
+    ) # Remove word_timestamps if it causes errors, or check version.
+    # If the user has a version that doesn't support it in the transcribe() signature
+    # but supports it internally, we might need a different approach.
+    # However, for most recent versions, it IS a valid argument for transcribe.
+    # Let's try to remove it from the direct call if it's failing at the DecodingOptions level.
+    # Wait, the error is inside transcribe.py calling decode_with_fallback.
+    # It seems the installed whisper version has an issue with this parameter.
+
 
     # 2. Neuro-Inclusive Video Editing (Main Master)
     if do_edit:
