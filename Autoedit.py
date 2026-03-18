@@ -1,4 +1,5 @@
 import os
+import sys
 import whisper
 import numpy as np
 import requests
@@ -9,6 +10,40 @@ import argparse
 from datetime import timedelta
 from dotenv import load_dotenv, set_key
 from google import genai
+from google.genai import errors
+
+
+def handle_gemini_error(e, client=None):
+    """Handle Gemini API errors and provide human-understandable messages."""
+    error_str = str(e)
+    if "429" in error_str and "spending cap" in error_str.lower():
+        print("\n[!] Gemini API Error: You've hit your spending cap for the Gemini API.")
+        print("    Please check your Google Cloud billing dashboard at: https://console.cloud.google.com/billing")
+    elif "429" in error_str:
+        print("\n[!] Gemini API Error: Too many requests or resource exhausted (Rate limit exceeded).")
+        print("    If you're using a free tier, you may have reached your quota.")
+    elif "401" in error_str or "403" in error_str:
+        print("\n[!] Gemini API Error: Authentication failed. Please check your API key in .env.")
+    elif "404" in error_str:
+        print("\n[!] Gemini API Error: Model not found (404). The requested model may be deprecated or misspelled.")
+        print("    Current model used: gemini-3.1-flash-lite-preview")
+        if client:
+            try:
+                print("\n    --- Attempting to list available models ---")
+                models = client.models.list()
+                found_any = False
+                for m in models:
+                    if 'generate_content' in m.supported_actions or 'generateContent' in m.supported_actions:
+                        print(f"    - {m.name}")
+                        found_any = True
+                if not found_any:
+                    print("    (No generative models found in your account/region)")
+            except Exception as list_err:
+                print(f"    (Could not list models: {list_err})")
+    else:
+        print(f"\n[!] Unexpected error from Gemini API: {e}")
+
+
 from moviepy import VideoFileClip, concatenate_videoclips, TextClip, CompositeVideoClip
 from moviepy.audio.fx import AudioFadeIn, AudioFadeOut
 
@@ -61,6 +96,8 @@ def detect_hooks_and_speakers(transcript):
     # Prompt for Viral Hook Detection (Text-only for speed/cost)
     prompt = f"""
     Analyze the following transcript and find 3 viral hooks (each between 15-60 seconds long) that are punchy and stand alone well.
+    Additionally, for each hook, provide a map of which 'speaker' is active and where they are likely positioned in a standard 3-person setup (left, center, right).
+    Even if there is only one speaker, assume they are 'center'.
     
     Return ONLY a JSON object with this exact structure:
     {{
@@ -68,7 +105,10 @@ def detect_hooks_and_speakers(transcript):
             {{
                 "start_time": float,
                 "end_time": float,
-                "title": "Short title"
+                "title": "Short title",
+                "active_speaker_map": [
+                    {{"time": float, "position": "left" | "center" | "right"}}
+                ]
             }}
         ]
     }}
@@ -77,15 +117,19 @@ def detect_hooks_and_speakers(transcript):
     {transcript}
     """
 
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            response_mime_type="application/json"
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.1-flash-lite-preview',
+            contents=prompt,
+            config=genai.types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
         )
-    )
-    
-    return json.loads(response.text)
+        return json.loads(response.text)
+    except Exception as e:
+        handle_gemini_error(e, client=client)
+        # Return an empty hook structure so the rest of the script doesn't crash
+        return {"hooks": []}
 
 
 def apply_vertical_crop(clip, position="center"):
@@ -166,25 +210,35 @@ def generate_viral_shorts(video_path, ai_hooks, whisper_result, font_path):
         
         caption_clips = []
         color_idx = 0
-        for w in hook_words:
-            # Create a TextClip for each word (or small phrase)
-            # MoviePy 2.x TextClip syntax
+        
+        # Group words into small chunks (2-3 words) for better readability
+        chunk_size = 3
+        for i_w in range(0, len(hook_words), chunk_size):
+            chunk = hook_words[i_w:i_w + chunk_size]
+            if not chunk:
+                continue
+            
+            phrase = " ".join([w['word'].strip().upper() for w in chunk])
+            start_phrase = chunk[0]['start'] - start_t
+            end_phrase = chunk[-1]['end'] - start_t
+            
+            # Create a TextClip for the phrase
             txt = TextClip(
-                text=w['word'].strip().upper(),
+                text=phrase,
                 font=font_path,
-                font_size=90,
+                font_size=80,
                 color=colors[color_idx % 3],
                 stroke_color="black",
                 stroke_width=2,
                 method='label',
-                duration=w['end'] - w['start']
-            ).with_start(w['start'] - start_t).with_position(("center", 1400)) # Bottom-ish
+                duration=end_phrase - start_phrase
+            ).with_start(start_phrase).with_position(("center", 1400)) # Bottom-ish
             
             caption_clips.append(txt)
             color_idx += 1
             
         # Composite video and captions
-        final_short = CompositeVideoClip([final_clip] + caption_clips)
+        final_short = CompositeVideoClip([final_clip] + caption_clips, size=(1080, 1920))
         
         # Write output
         output_path = os.path.join(SHORTS_DIR, f"short_{i+1}_{hook['title'].replace(' ', '_')}.mp4")
@@ -208,15 +262,9 @@ def run_full_pipeline(input_path, output_video_name, min_duration=2.0, do_edit=T
         input_path,
         fp16=False,
         verbose=True,
-        language='en'
-    ) # Remove word_timestamps if it causes errors, or check version.
-    # If the user has a version that doesn't support it in the transcribe() signature
-    # but supports it internally, we might need a different approach.
-    # However, for most recent versions, it IS a valid argument for transcribe.
-    # Let's try to remove it from the direct call if it's failing at the DecodingOptions level.
-    # Wait, the error is inside transcribe.py calling decode_with_fallback.
-    # It seems the installed whisper version has an issue with this parameter.
-
+        language='en',
+        word_timestamps=True
+    )
 
     # 2. Neuro-Inclusive Video Editing (Main Master)
     if do_edit:
@@ -320,16 +368,19 @@ def run_full_pipeline(input_path, output_video_name, min_duration=2.0, do_edit=T
         {result['text']}
         """
 
-        response = client.models.generate_content(
-            model='gemini-3.1-pro-preview',
-            contents=prompt
-        )
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.1-flash-lite-preview',
+                contents=prompt
+            )
 
-        meta_path = "youtube_metadata.txt"
-        with open(meta_path, "w") as f:
-            f.write(response.text)
+            meta_path = "youtube_metadata.txt"
+            with open(meta_path, "w") as f:
+                f.write(response.text)
 
-        print(f"-> Metadata saved to: {meta_path}")
+            print(f"-> Metadata saved to: {meta_path}")
+        except Exception as e:
+            handle_gemini_error(e, client=client)
     else:
         print("\n[5/5] Skipping Metadata Generation.")
 
@@ -372,11 +423,15 @@ Examples:
         base, ext = os.path.splitext(args.input)
         output_path = f"{base}_finalised.mp4"
 
-    run_full_pipeline(
-        args.input, 
-        output_path, 
-        min_duration=args.min_duration,
-        do_edit=not args.no_edit,
-        do_shorts=not args.no_shorts,
-        do_metadata=not args.no_metadata
-    )
+    try:
+        run_full_pipeline(
+            args.input, 
+            output_path, 
+            min_duration=args.min_duration,
+            do_edit=not args.no_edit,
+            do_shorts=not args.no_shorts,
+            do_metadata=not args.no_metadata
+        )
+    except KeyboardInterrupt:
+        print("\n\n[!] Operation cancelled by user (Ctrl+C). Exiting...")
+        sys.exit(1)
