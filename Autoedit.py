@@ -53,23 +53,14 @@ def get_gemini_client():
     return genai.Client(api_key=api_key)
 
 
-def detect_hooks_and_speakers(video_path, transcript):
-    """Analyze video with Gemini to find viral hooks and speaker layouts."""
-    print("\n[AI] Analyzing video for viral hooks and speaker layout...")
+def detect_hooks_and_speakers(transcript):
+    """Analyze transcript with Gemini to find viral hooks."""
+    print("\n[AI] Analyzing transcript for viral hooks...")
     client = get_gemini_client()
 
-    # Upload video for analysis
-    file = client.files.upload(file=video_path)
-    print(f"-> Video uploaded. ID: {file.name}")
-
-    # Prompt for Viral Hook Detection
+    # Prompt for Viral Hook Detection (Text-only for speed/cost)
     prompt = f"""
-    Analyze this video and the following transcript. 
-    Find 3 viral hooks (each between 15-60 seconds long) that are punchy and stand alone well.
-    For EACH hook, identify the speaker(s) and their layout.
-    
-    If there are multiple speakers, tell me where they are positioned in the frame (e.g. "Speaker 1: Left, Speaker 2: Right").
-    If it's a single speaker, just say "Center".
+    Analyze the following transcript and find 3 viral hooks (each between 15-60 seconds long) that are punchy and stand alone well.
     
     Return ONLY a JSON object with this exact structure:
     {{
@@ -77,10 +68,7 @@ def detect_hooks_and_speakers(video_path, transcript):
             {{
                 "start_time": float,
                 "end_time": float,
-                "title": "Short title",
-                "active_speaker_map": [
-                    {{"time": float, "speaker": "Speaker Name", "position": "left|right|center"}}
-                ]
+                "title": "Short title"
             }}
         ]
     }}
@@ -91,7 +79,7 @@ def detect_hooks_and_speakers(video_path, transcript):
 
     response = client.models.generate_content(
         model='gemini-2.0-flash',
-        contents=[file, prompt],
+        contents=prompt,
         config=genai.types.GenerateContentConfig(
             response_mime_type="application/json"
         )
@@ -299,7 +287,7 @@ def run_full_pipeline(input_path, output_video_name, min_duration=2.0, do_edit=T
     # 4. Viral Shorts Generation (Optional)
     if do_shorts:
         try:
-            ai_hooks = detect_hooks_and_speakers(input_path, result['text'])
+            ai_hooks = detect_hooks_and_speakers(result['text'])
             print(f"\n[4/5] Generating {len(ai_hooks['hooks'])} Viral Shorts...")
             generate_viral_shorts(input_path, ai_hooks, result, font_path)
         except Exception as e:
