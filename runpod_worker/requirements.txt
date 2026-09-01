@@ -1,0 +1,13 @@
+# Worker-side only. The desktop does not install these — see the repo root
+# requirements.txt for that.
+runpod>=1.6
+faster-whisper
+rembg[gpu]
+mediapipe
+numpy
+Pillow
+boto3
+
+# Speaker labels. Pulls torch (~2GB) and needs HF_TOKEN set on the endpoint.
+# Comment out to halve the image size if you label speakers by hand.
+pyannote.audio

@@ -5,9 +5,8 @@ Everything lands in one text file next to the project. Nothing is posted and
 nothing is uploaded: the Bluesky text is written with a placeholder where the
 video link goes, so publishing stays a deliberate act you perform yourself.
 
-The persona and rules come from the older Autoedit.py prompt, which was tuned
-by hand and is the reason the output sounds like Heather rather than like a
-model. Keep edits to it deliberate.
+The persona lives in voice.py, next to the channel promise it has to stay
+consistent with. Edit it there, not here.
 
 Generated copy goes through the same review gate as on-screen citations. This
 is channel voice reaching an audience, so it gets checked before it can be
@@ -19,18 +18,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .. import llm
+from .. import llm, voice
 from ..edl import ReviewItem, Timeline
 
 METADATA_PROMPT = """\
 Take the following transcript from a UK news-commentary video and generate
 publishing copy for it.
 
-PERSONA:
-- Direct, Unfiltered, Punchy sentences. No 'fluff'.
-- Principled Advocate (Bodily autonomy/Trans rights). Sharp on hypocrisy.
-- Dry British Humor. Understated irony. Not 'bubbly'.
-- 49-year-old software developer's grounded, blunt perspective.
+{voice}
 
 RULES:
 - Title: under 60 characters, include the year {year}, no clickbait.
@@ -77,6 +72,7 @@ def generate(timeline: Timeline, transcript: str, client=None,
     """Ask the model for publishing copy and flag its claims for review."""
     year = year or (timeline.episode.recorded[:4] if timeline.episode.recorded else "")
     prompt = (METADATA_PROMPT
+              .replace("{voice}", voice.prompt_block())
               .replace("{transcript}", transcript)
               .replace("{year}", year or "2026"))
     data = llm.classify_json(prompt, client)

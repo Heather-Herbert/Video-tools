@@ -48,11 +48,13 @@ from pathlib import Path
 
 from .. import brand
 
-# Strokes are drawn widest first, so later entries sit on top. Widths are in
-# pixels at THUMB_W; they scale with the output size.
+# The halo, read outward from the subject: white, pink, blue — the trans flag's
+# own order. Strokes are drawn widest first so the narrow ones sit on top.
+# Widths are in pixels at THUMB_W and scale with the output size.
 DEFAULT_STROKES = [
-    {"width": 26, "colour": brand.WARM_DARK},   # outer dark keyline
-    {"width": 14, "colour": brand.WHITE},       # the white sticker edge
+    {"width": 30, "colour": brand.TRANS_BLUE},
+    {"width": 20, "colour": brand.TRANS_PINK},
+    {"width": 10, "colour": brand.WHITE},
 ]
 
 THUMB_W, THUMB_H = 1280, 720
@@ -60,6 +62,12 @@ THUMB_W, THUMB_H = 1280, 720
 # The text block. Not in brand.py because it is thumbnail furniture rather than
 # part of the on-screen identity — the cards must stay trans-flag palette.
 THUMB_ACCENT = "#D42B2B"
+
+# How much of the frame height the speaker fills, and how far off the right
+# edge they sit. The halo traces the subject, so an oversized subject pushes
+# the outline off-frame and loses the sticker read entirely.
+SUBJECT_HEIGHT = 0.80
+SUBJECT_MARGIN = 0.04
 
 # Drop shadow: hard enough to read as a sticker. A soft shadow undoes the
 # crispness the stroke stack just bought.
@@ -265,7 +273,8 @@ def _merge(windows: list[tuple[float, float]]) -> list[tuple[float, float]]:
 
 
 def propose(timeline, video: str | Path, work_dir: Path, top: int = 10,
-            windows: list[tuple[float, float]] | None = None) -> list[Candidate]:
+            windows: list[tuple[float, float]] | None = None,
+            remote: bool = False) -> list[Candidate]:
     """
     Score frames in the candidate windows and write a contact sheet.
 
@@ -282,25 +291,34 @@ def propose(timeline, video: str | Path, work_dir: Path, top: int = 10,
             "no candidate windows — run the analyse stage first, or pass --at"
         )
 
-    mesh = _face_mesh()
-    scored: list[Candidate] = []
+    # Frame extraction is ffmpeg's job either way; only the scoring moves.
+    harvested: list[tuple[float, Path]] = []
     for start, end in windows:
-        for raw_time, path in extract_frames(video, frames_dir, start, end):
-            measured = score_frame(path, mesh)
-            if measured is None:
-                continue
-            score, note = _combine(measured)
-            if score <= 0.0:
-                continue                      # disqualified, not merely weak
-            tl_time = timeline.raw_to_timeline(raw_time)
-            scored.append(Candidate(
-                path=str(path), raw_time=raw_time,
-                timeline_time=tl_time if tl_time is not None else -1.0,
-                score=score, eye=round(measured["eye"], 4),
-                mouth=round(measured["mouth"], 4),
-                sharpness=round(measured["sharpness"], 1),
-                yaw=round(measured["yaw"], 4), note=note,
-            ))
+        harvested.extend(extract_frames(video, frames_dir, start, end))
+
+    if remote:
+        measurements = _score_remotely(harvested)
+    else:
+        mesh = _face_mesh()
+        measurements = {p: score_frame(p, mesh) for _, p in harvested}
+
+    scored: list[Candidate] = []
+    for raw_time, path in harvested:
+        measured = measurements.get(path)
+        if measured is None:
+            continue                          # no face found in this frame
+        score, note = _combine(measured)
+        if score <= 0.0:
+            continue                          # disqualified, not merely weak
+        tl_time = timeline.raw_to_timeline(raw_time)
+        scored.append(Candidate(
+            path=str(path), raw_time=raw_time,
+            timeline_time=tl_time if tl_time is not None else -1.0,
+            score=score, eye=round(measured["eye"], 4),
+            mouth=round(measured["mouth"], 4),
+            sharpness=round(measured["sharpness"], 1),
+            yaw=round(measured["yaw"], 4), note=note,
+        ))
 
     scored.sort(key=lambda c: c.score, reverse=True)
     shortlist = _spread(scored, top)
@@ -362,10 +380,35 @@ def contact_sheet(candidates: list[Candidate], out_path: Path,
     return out_path
 
 
+def _score_remotely(harvested: list[tuple[float, Path]]) -> dict:
+    """
+    Batch the frames to a GPU worker and index the results back by path.
+
+    One job for all frames: per-frame jobs would pay the worker's cold start
+    dozens of times over, which is slower than simply scoring locally.
+    """
+    from .. import remote as remote_mod
+
+    paths = [p for _, p in harvested]
+    by_name = {p.name: p for p in paths}
+    out: dict = {}
+    for row in remote_mod.score_frames(paths):
+        path = by_name.get(row.get("name", ""))
+        if path is None:
+            continue
+        out[path] = None if not row.get("face") else {
+            k: row[k] for k in ("eye", "mouth", "yaw", "sharpness", "face_h")
+        }
+    return out
+
+
 # --- the sticker halo -------------------------------------------------------
 
-def cutout(frame: Path, out_path: Path) -> Path:
+def cutout(frame: Path, out_path: Path, remote: bool = False) -> Path:
     """Remove the background. Output is RGBA with a soft edge; halo() hardens it."""
+    if remote:
+        from .. import remote as remote_mod
+        return remote_mod.cutout(frame, out_path)
     try:
         from rembg import remove  # noqa: PLC0415
     except ImportError as exc:
@@ -500,12 +543,15 @@ def compose(sticker: Path, out_path: Path, phrase: str = "",
         bg = Image.new("RGBA", (width, height), brand.rgba(brand.WARM_DARK))
 
     sub = Image.open(sticker).convert("RGBA")
-    # Fill the frame height with a little bleed, and sit the subject right of
-    # centre so the text block has the left third to itself.
-    target_h = int(height * 1.06)
-    sub = sub.resize((int(sub.width * target_h / sub.height), target_h), Image.LANCZOS)
-    bg.alpha_composite(sub, (width - sub.width + int(width * 0.06),
-                             height - sub.height))
+    # The halo hugs the speakers; it is not a border around the whole frame.
+    # So the subject is sized to a fraction of the frame and sits on the
+    # bottom-right, leaving the left for the text block and keeping the whole
+    # outline visible rather than running off the edges.
+    target_h = int(height * SUBJECT_HEIGHT)
+    sub = sub.resize((max(1, int(sub.width * target_h / sub.height)), target_h),
+                     Image.LANCZOS)
+    x = width - sub.width - int(width * SUBJECT_MARGIN)
+    bg.alpha_composite(sub, (x, height - sub.height))
 
     if phrase:
         _text_block(bg, phrase.upper(), width, height)
@@ -554,9 +600,9 @@ def _text_block(img, text: str, width: int, height: int) -> None:
 
 
 def build(frame: Path, work_dir: Path, out_path: Path, phrase: str = "",
-          template: Path | None = None) -> Path:
+          template: Path | None = None, remote: bool = False) -> Path:
     """Chosen frame → cutout → halo → template. The deterministic half."""
     work_dir.mkdir(parents=True, exist_ok=True)
-    cut = cutout(frame, work_dir / "cutout.png")
+    cut = cutout(frame, work_dir / "cutout.png", remote=remote)
     sticker = halo(cut, work_dir / "sticker.png")
     return compose(sticker, out_path, phrase=phrase, template=template)

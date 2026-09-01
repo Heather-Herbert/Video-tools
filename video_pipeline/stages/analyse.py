@@ -11,7 +11,7 @@ Backend order is Claude CLI → agy → DeepSeek → OpenRouter, via video_pipel
 
 from __future__ import annotations
 
-from .. import llm
+from .. import llm, voice
 from ..edl import (
     Chapter, Cut, NEEDS_REVIEW, Overlay, Reframe, ReviewItem, Subtitle, Timeline,
 )
@@ -25,9 +25,10 @@ MAX_PROTECTED_BEAT = 1.60
 
 
 ANALYSIS_PROMPT = """\
-You are assisting the edit of a two-person UK news-commentary video for the
-YouTube channel The Polycule. The hosts are Heather and Sophie. The channel is
-left-of-centre and trans-positive; it covers UK politics and lived experience.
+You are assisting the edit of a two-person UK news-commentary video. The hosts
+are Heather and Sophie. It covers UK politics and lived experience.
+
+{voice}
 
 Below is a timestamped, speaker-labelled transcript. Timestamps are seconds
 into the raw recording. Analyse it and return JSON only.
@@ -67,7 +68,10 @@ Transcript:
 
 
 def _call_llm(transcript: str, client=None) -> dict:
-    return llm.classify_json(ANALYSIS_PROMPT.replace("{transcript}", transcript), client)
+    prompt = (ANALYSIS_PROMPT
+              .replace("{voice}", voice.prompt_block())
+              .replace("{transcript}", transcript))
+    return llm.classify_json(prompt, client)
 
 
 def build_cuts(subtitles: list[Subtitle], source_id: str, duration: float,

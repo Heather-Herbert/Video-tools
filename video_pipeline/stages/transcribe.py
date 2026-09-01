@@ -39,13 +39,24 @@ def _load_host_transcriber():
 
 
 def transcribe(audio_path: str | Path, model: str = "base",
-               device: str = "cpu", language: str = "en") -> dict:
+               device: str = "cpu", language: str = "en",
+               remote: bool = False) -> dict:
     """
     Return a result dict of segments with start/end/text.
 
     faster-whisper is a generator API, so we materialise it here — the analysis
     stage needs the whole transcript at once to reason about structure.
     """
+    if remote:
+        from .. import remote as remote_mod
+        # large-v3 on a rented GPU: the reason to go remote is to stop trading
+        # accuracy for a CPU's patience, so the local default is not reused.
+        return remote_mod.transcribe(
+            Path(audio_path),
+            model="large-v3" if model in ("base", "small", "medium") else model,
+            language=language,
+        )
+
     host = _load_host_transcriber()
     if host is not None:
         return host.transcribe_file(str(audio_path), model=model,
@@ -117,7 +128,7 @@ def _speaker_at(turns: list[dict], start: float, end: float) -> tuple[str, float
 
 
 def run(audio_path: str | Path, speaker_names: dict | None = None,
-        model: str = "base", device: str = "cpu",
+        model: str = "base", device: str = "cpu", remote: bool = False,
         ) -> tuple[list[Subtitle], list[ReviewItem], dict]:
     """
     Produce subtitles in raw time, plus review items for anything uncertain.
@@ -126,8 +137,10 @@ def run(audio_path: str | Path, speaker_names: dict | None = None,
     {"SPEAKER_00": "Heather", "SPEAKER_01": "Sophie"}.
     """
     speaker_names = speaker_names or {}
-    result = transcribe(audio_path, model=model, device=device)
-    turns = diarize(audio_path)
+    result = transcribe(audio_path, model=model, device=device, remote=remote)
+    # A remote worker diarizes in the same job when it has a token, so only
+    # fall back to a local pass when it returned nothing.
+    turns = result.get("speakers") or diarize(audio_path)
 
     subtitles: list[Subtitle] = []
     review: list[ReviewItem] = []

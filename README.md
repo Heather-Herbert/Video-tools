@@ -131,7 +131,7 @@ Then accept the model licence at
 ### 6. Check it works
 
 ```bash
-python -m pytest            # 53 tests, no media or API keys needed
+python -m pytest            # 64 tests, no media, models or API keys needed
 python -m video_pipeline.run --help
 ```
 
@@ -166,10 +166,10 @@ without paying for the transcript again.
 | Stage | Does | Slow? |
 |---|---|---|
 | `ingest` | probe, 720p proxy, 16 kHz audio | yes, once |
-| `transcribe` | faster-whisper + optional diarization | yes |
+| `transcribe` | faster-whisper + optional diarization | yes (`--remote`) |
 | `analyse` | LLM → cuts, chapters, cards, punch-ins | ~1 call |
 | `graphics` | render cards as transparent PNGs | fast, cached |
-| `thumbnail` | score frames, then cut out and halo the one you pick | medium |
+| `thumbnail` | score frames, then cut out and halo the one you pick | medium (`--remote`) |
 | `metadata` | title, description, tags, Bluesky draft | ~1 call |
 | `assemble` | write the `.kdenlive` project | fast |
 | `review` | list / resolve the human checkpoint | — |
@@ -211,16 +211,101 @@ glow, and two things produce it:
    element, which holds sharp corners. Never a Gaussian glow.
 
 The stack is composed at 2× and scaled down, so the edge is antialiased without
-the shape ever being softened. Widths and colours are `DEFAULT_STROKES` and
-`SHADOW` at the top of `stages/thumbnail.py`; the text block colour is
-`THUMB_ACCENT`, kept out of `brand.py` because on-screen cards stay trans-flag
-palette and the thumbnail block does not.
+the shape ever being softened.
+
+The default strokes read outward from the subject as **white, pink, blue** —
+the trans flag's own order — at 10, 20 and 30px. The halo hugs the speakers
+rather than bordering the frame: `SUBJECT_HEIGHT` (0.80) keeps the subject to
+four-fifths of the frame height so the whole outline stays visible instead of
+running off the edges. All of it, plus `SHADOW`, is at the top of
+`stages/thumbnail.py`.
+
+The text block colour is `THUMB_ACCENT` and is deliberately kept out of
+`brand.py`: on-screen cards stay trans-flag palette, and the thumbnail block
+does not.
 
 Drop your existing template artwork at `assets/templates/thumbnail.png` (1280×720)
 and it is used as the background; without one the stage paints a flat brand
 background so it still works on a fresh machine.
 
 ---
+
+## Running stages on RunPod
+
+Two stages are worth renting a GPU for on a machine short of graphics power:
+transcription, and the thumbnail's background removal and face scoring.
+Everything else — analysis, card rendering, XML assembly — is cheap and stays
+local.
+
+Remote is opt-in per run and never required:
+
+```bash
+python -m video_pipeline.run transcribe --slug 2026-09-06 --remote
+python -m video_pipeline.run thumbnail  --slug 2026-09-06 --remote
+```
+
+Without `--remote` nothing changes, and with it but no configuration the stage
+stops and tells you rather than failing deep inside a library.
+
+A cold worker takes 30-60s to boot, so a short clip is often faster locally.
+The win is on a full episode: `large-v3` on a rented GPU against `base` on a
+CPU is both faster and more accurate.
+
+### One-time setup
+
+**1. Object storage.** RunPod's job payloads are far too small for audio, so
+media goes through an S3-compatible bucket and the job carries only keys.
+Cloudflare R2 (free tier is ample), Backblaze B2, AWS S3, or a RunPod network
+volume all work. Create a bucket and an access key, and set a lifecycle rule to
+delete objects after a day — the bucket only ever holds intermediates, and the
+pipeline deletes them itself on success.
+
+**2. Build and push the worker image.**
+
+```bash
+docker build -t <dockerhub-user>/video-tools-worker:1 runpod_worker/
+docker push  <dockerhub-user>/video-tools-worker:1
+```
+
+The image is around 6 GB: Whisper large-v3 and the rembg model are baked in
+rather than downloaded on every cold start.
+
+**3. Create a serverless endpoint** on that image at
+<https://runpod.io/console/serverless>, with a 16 GB GPU, 15 GB container disk,
+max workers 1, idle timeout 5s and FlashBoot on. Give it these environment
+variables: `S3_BUCKET`, `S3_ENDPOINT_URL`, `S3_ACCESS_KEY_ID`,
+`S3_SECRET_ACCESS_KEY`, `S3_REGION`, and `HF_TOKEN` if you want speaker labels.
+
+**4. Fill in `.env` on the desktop:**
+
+```
+RUNPOD_API_KEY=...
+RUNPOD_ENDPOINT_ID=...        # from the endpoint page
+S3_BUCKET=...
+S3_ENDPOINT_URL=...
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+```
+
+```bash
+pip install boto3             # only needed for --remote
+```
+
+### How it behaves
+
+- Jobs are submitted **asynchronously** and polled. A synchronous request times
+  out at the HTTP layer long before a 45-minute transcript finishes, and the
+  job then runs on invisibly — billed and unreachable.
+- If you stop waiting, the job is **cancelled**, so a hung job does not keep
+  billing a GPU with nobody left to collect the result.
+- Uploaded audio is deleted from the bucket afterwards, including when the job
+  fails.
+- The worker returns **raw measurements** for frame scoring, not verdicts. The
+  thresholds that decide what counts as a blink live on the desktop in
+  `stages/thumbnail.py`, so tuning them never means rebuilding a 6 GB image.
+
+Rendering is not offloaded. It is MLT/melt work rather than GPU work, and you
+usually want to finish the edit by hand in Kdenlive anyway.
 
 ## The metadata file
 
@@ -233,9 +318,19 @@ with a literal `<<PASTE VIDEO LINK>>` placeholder, and any URL the model
 invents is stripped, so an unfinished post is obviously unfinished rather than
 quietly linkless.
 
-The persona and rules in the prompt came from the older `legacy/Autoedit.py`
-and were tuned by hand. Edit them deliberately — they are the reason the output
-sounds like Heather and not like a model.
+## Voice
+
+`voice.py` holds the channel promise, the writing persona and the guardrails,
+and every prompt that generates audience-facing words reads from it. It lives in
+the repo rather than in anyone's head, because this runs on a desktop with no
+access to either.
+
+Two sources feed it and they pull in different directions: the channel promise
+("positive, funny, refusing to give up — no rage bait") and the persona carried
+over from `Autoedit.py` ("direct, unfiltered, sharp on hypocrisy"). They are
+reconciled explicitly rather than left to fight inside a prompt: **sharp about
+power, warm toward people.** Anger at a policy is on-voice; despair aimed at the
+audience is not. Change one and read the other.
 
 ---
 
@@ -285,6 +380,8 @@ video_pipeline/
   edl.py               tool-neutral edit decision list + the time mapping
   brand.py             palette and typeface, from the vault style guide
   llm.py               backend chain and the only reader of .env
+  voice.py             channel promise, persona and guardrails, in one place
+  remote.py            RunPod offload for the GPU-heavy stages
   stages/
     ingest.py          probe, proxy, audio extraction, silence detection
     transcribe.py      faster-whisper + optional pyannote
@@ -296,6 +393,9 @@ video_pipeline/
   writers/
     kdenlive.py        MLT XML
   run.py               stage CLI
+runpod_worker/
+  handler.py           the serverless worker; imports nothing from the pipeline
+  Dockerfile           CUDA image with Whisper and rembg baked in
 legacy/
   Autoedit.py          the previous all-in-one script
   RemoveBackground.py  standalone rembg wrapper
@@ -306,10 +406,6 @@ the viral-shorts generator, which the pipeline does not.
 
 ## Not built yet
 
-- RunPod serverless endpoints for the GPU stages (`transcribe`, and the
-  thumbnail's rembg/mediapipe pass). Every stage round-trips through
-  `<slug>.edl.json`, so a remote stage is "ship the work dir up, run one stage,
-  ship the delta back" rather than a re-architecture.
 - Intro/outro stings, SFX library, subscribe animation — the timeline supports
   `sfx` and `stinger` sources, but there are no assets yet.
 - Viral shorts as a pipeline stage (still only in `legacy/Autoedit.py`).

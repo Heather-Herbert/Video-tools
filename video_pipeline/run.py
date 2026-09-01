@@ -29,7 +29,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import llm
+from . import llm, remote
 from .edl import Episode, ReviewItem, Source, Subtitle, Timeline
 from .stages import (
     analyse, graphics, ingest, metadata as metadata_stage,
@@ -100,8 +100,15 @@ def stage_transcribe(ws: Workspace, args) -> Timeline:
     tl = ws.load()
     src = next(s for s in tl.sources if s.role == "main")
     audio = ingest.extract_audio(src.path, ws.work / "audio")
+    if args.remote and not remote.is_configured():
+        raise SystemExit(
+            "--remote given but RunPod is not configured; see the README, "
+            "or drop --remote to transcribe locally")
+    if args.remote:
+        print("  transcribing on RunPod (large-v3)")
     subs, review, meta = transcribe.run(
         audio, speaker_names=tl.speakers, model=args.model, device=args.device,
+        remote=args.remote,
     )
     tl.subtitles = subs
     tl.review.extend(review)
@@ -185,7 +192,8 @@ def stage_thumbnail(ws: Workspace, args) -> Timeline:
         if args.at is not None:
             windows = [(max(0.0, args.at - 2.0), args.at + 2.0)]
         cands = thumbnail_stage.propose(
-            tl, src.path, ws.thumb_work, top=args.top, windows=windows)
+            tl, src.path, ws.thumb_work, top=args.top, windows=windows,
+            remote=args.remote)
         if not cands:
             raise SystemExit(
                 "no usable frames found — every candidate was a blink, a "
@@ -208,7 +216,8 @@ def stage_thumbnail(ws: Workspace, args) -> Timeline:
 
     phrase = args.phrase or _phrase_from_metadata(ws)
     out = thumbnail_stage.build(frame, ws.thumb_work, ws.thumbnail,
-                                phrase=phrase, template=template)
+                                phrase=phrase, template=template,
+                                remote=args.remote)
     print(f"thumbnail: {out}")
     if not phrase:
         print("  no phrase set — run the metadata stage first, or pass --phrase")
@@ -334,6 +343,8 @@ def main(argv=None) -> int:
                    help="thumbnail: text block override")
     p.add_argument("--template", type=Path, default=None,
                    help="thumbnail: background template PNG")
+    p.add_argument("--remote", action="store_true",
+                   help="run the GPU-heavy work on RunPod (transcribe, thumbnail)")
     args = p.parse_args(argv)
 
     ws = Workspace(args.slug, args.root)
