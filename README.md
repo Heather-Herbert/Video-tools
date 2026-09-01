@@ -255,10 +255,31 @@ CPU is both faster and more accurate.
 
 **1. Object storage.** RunPod's job payloads are far too small for audio, so
 media goes through an S3-compatible bucket and the job carries only keys.
-Cloudflare R2 (free tier is ample), Backblaze B2, AWS S3, or a RunPod network
-volume all work. Create a bucket and an access key, and set a lifecycle rule to
-delete objects after a day — the bucket only ever holds intermediates, and the
-pipeline deletes them itself on success.
+
+**Cloudflare R2 is the one to use.** This workload is egress-shaped — the
+worker downloads your audio out of the bucket on every job — and R2 charges
+nothing for egress, where B2 and S3 both bill it. The free tier (10 GB) is far
+more than this needs, since the bucket only ever holds intermediates that are
+deleted on success.
+
+1. Cloudflare dashboard → R2 → **Create bucket**.
+2. → **Manage R2 API Tokens** → **Create token**, permission *Object Read &
+   Write*, scoped to that bucket. The Access Key ID and Secret are shown once.
+3. The endpoint URL is on the bucket's settings page, in the form
+   `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`.
+4. Optional: bucket → Settings → Object lifecycle rules → delete after 1 day,
+   as a backstop to the pipeline's own cleanup.
+
+```bash
+S3_BUCKET=video-tools-scratch
+S3_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+S3_ACCESS_KEY_ID=<from the token>
+S3_SECRET_ACCESS_KEY=<from the token>
+S3_REGION=auto           # R2 does not use AWS-style regions
+```
+
+Backblaze B2, AWS S3 and a RunPod network volume with the S3 gateway all work
+too — set the same five variables.
 
 **2. Build and push the worker image.**
 
@@ -300,6 +321,10 @@ pip install boto3             # only needed for --remote
   billing a GPU with nobody left to collect the result.
 - Uploaded audio is deleted from the bucket afterwards, including when the job
   fails.
+- boto3 1.36 and later send CRC32 integrity checksums on every upload by
+  default, which **R2 rejects** with an opaque `x-amz-content-sha256 is
+  invalid`. Both clients set `request_checksum_calculation="when_required"` to
+  restore the old behaviour. If you ever rewrite the S3 client, keep that.
 - The worker returns **raw measurements** for frame scoring, not verdicts. The
   thresholds that decide what counts as a blink live on the desktop in
   `stages/thumbnail.py`, so tuning them never means rebuilding a 6 GB image.

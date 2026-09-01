@@ -89,14 +89,27 @@ def _require_config() -> dict:
 def _s3(cfg: dict):
     try:
         import boto3  # noqa: PLC0415
+        from botocore.config import Config  # noqa: PLC0415
     except ImportError as exc:
         raise RemoteError("boto3 is needed for --remote; pip install boto3") from exc
+
+    # boto3 1.36 began sending CRC32 integrity checksums on every upload by
+    # default. Cloudflare R2 rejects the trailer with an opaque
+    # "Header 'x-amz-content-sha256' is invalid", and B2 fails similarly.
+    # Restoring the previous behaviour costs nothing on AWS, where checksums
+    # are still sent whenever an operation actually requires them.
+    config = Config(
+        request_checksum_calculation="when_required",
+        response_checksum_validation="when_required",
+        retries={"max_attempts": 5, "mode": "standard"},
+    )
     return boto3.client(
         "s3",
         endpoint_url=cfg["s3_endpoint"] or None,
         aws_access_key_id=cfg["s3_key"],
         aws_secret_access_key=cfg["s3_secret"],
-        region_name=cfg["region"],
+        region_name=cfg["region"] or "auto",
+        config=config,
     )
 
 
