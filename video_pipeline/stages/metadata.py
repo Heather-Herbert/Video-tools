@@ -1,0 +1,184 @@
+"""
+metadata.py — title, description, chapters, thumbnail phrase, Bluesky post.
+
+Everything lands in one text file next to the project. Nothing is posted and
+nothing is uploaded: the Bluesky text is written with a placeholder where the
+video link goes, so publishing stays a deliberate act you perform yourself.
+
+The persona and rules come from the older Autoedit.py prompt, which was tuned
+by hand and is the reason the output sounds like Heather rather than like a
+model. Keep edits to it deliberate.
+
+Generated copy goes through the same review gate as on-screen citations. This
+is channel voice reaching an audience, so it gets checked before it can be
+pasted anywhere.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from .. import llm
+from ..edl import ReviewItem, Timeline
+
+METADATA_PROMPT = """\
+Take the following transcript from a UK news-commentary video and generate
+publishing copy for it.
+
+PERSONA:
+- Direct, Unfiltered, Punchy sentences. No 'fluff'.
+- Principled Advocate (Bodily autonomy/Trans rights). Sharp on hypocrisy.
+- Dry British Humor. Understated irony. Not 'bubbly'.
+- 49-year-old software developer's grounded, blunt perspective.
+
+RULES:
+- Title: under 60 characters, include the year {year}, no clickbait.
+- Description: keywords in the first line (max 5). 1000-3000 characters.
+- Popular language: explain how this affects everyone, not just trans people.
+- Thumbnail phrase: max 20 characters, upper case reads best. The single idea
+  the video lands. Not a sentence.
+- Bluesky post: under 280 characters. Do NOT include a URL or any link — the
+  link is added by hand later.
+- DO NOT HALLUCINATE: only use facts present in the transcript.
+
+Return this exact JSON shape:
+
+{
+  "title": "",
+  "description": "",
+  "thumbnail_phrase": "",
+  "bluesky": "",
+  "tags": ["", ""],
+  "claims": [{"claim": "a factual or statistical claim made in the description",
+              "where": "title | description | bluesky"}]
+}
+
+"claims" lists every checkable factual assertion your copy makes, so a human
+can verify them before this is published. An empty list is a valid answer when
+the copy makes no factual claims of its own.
+
+Transcript:
+---
+{transcript}
+---
+"""
+
+# Where the video URL goes in the Bluesky draft. Left as a literal placeholder
+# so an unedited post is obviously unfinished rather than quietly linkless.
+LINK_PLACEHOLDER = "<<PASTE VIDEO LINK>>"
+
+TITLE_MAX = 60
+BLUESKY_MAX = 300            # Bluesky's real limit; we ask for 280 for the link
+
+
+def generate(timeline: Timeline, transcript: str, client=None,
+             year: str = "") -> dict:
+    """Ask the model for publishing copy and flag its claims for review."""
+    year = year or (timeline.episode.recorded[:4] if timeline.episode.recorded else "")
+    prompt = (METADATA_PROMPT
+              .replace("{transcript}", transcript)
+              .replace("{year}", year or "2026"))
+    data = llm.classify_json(prompt, client)
+
+    meta = {
+        "title": (data.get("title") or "").strip(),
+        "description": (data.get("description") or "").strip(),
+        "thumbnail_phrase": (data.get("thumbnail_phrase") or "").strip(),
+        "bluesky": (data.get("bluesky") or "").strip(),
+        "tags": [t.strip() for t in data.get("tags", []) if t and t.strip()],
+    }
+
+    # Strip any URL the model added despite being told not to; the placeholder
+    # is the only link that belongs in the draft.
+    meta["bluesky"] = re.sub(r"https?://\S+", "", meta["bluesky"]).strip()
+
+    for claim in data.get("claims", []):
+        text = (claim.get("claim") or "").strip()
+        if text:
+            timeline.review.append(ReviewItem(
+                kind="metadata_claim", at=0.0, severity="block",
+                note=f"{claim.get('where', 'description')}: {text}",
+            ))
+
+    if meta["title"]:
+        timeline.review.append(ReviewItem(
+            kind="metadata_copy", at=0.0, severity="block",
+            note=f"title: {meta['title']}",
+        ))
+    if meta["bluesky"]:
+        timeline.review.append(ReviewItem(
+            kind="metadata_copy", at=0.0, severity="block",
+            note=f"bluesky: {meta['bluesky']}",
+        ))
+
+    if len(meta["title"]) > TITLE_MAX:
+        timeline.review.append(ReviewItem(
+            kind="metadata_copy", at=0.0, severity="check",
+            note=f"title is {len(meta['title'])} chars, over the {TITLE_MAX} limit",
+        ))
+
+    return meta
+
+
+def render_file(timeline: Timeline, meta: dict, chapters: str,
+                out_path: Path) -> Path:
+    """
+    Write the one text file that goes with the project and the thumbnail.
+
+    Plain text with obvious section headers, because the consumer is you with a
+    YouTube upload form open, not another program.
+    """
+    bluesky = meta.get("bluesky", "")
+    if bluesky:
+        bluesky = f"{bluesky}\n\n{LINK_PLACEHOLDER}"
+
+    tags = ", ".join(meta.get("tags", []))
+    open_items = [r for r in timeline.review if not r.resolved]
+
+    sections = [
+        f"# {timeline.episode.slug}",
+        "",
+        "Generated by video-tools. Nothing here has been published.",
+        f"{len(open_items)} review item(s) still open at the time of writing.",
+        "",
+        "=" * 62,
+        "TITLE",
+        "=" * 62,
+        meta.get("title", ""),
+        f"({len(meta.get('title', ''))} characters)",
+        "",
+        "=" * 62,
+        "THUMBNAIL PHRASE",
+        "=" * 62,
+        meta.get("thumbnail_phrase", ""),
+        "",
+        "=" * 62,
+        "DESCRIPTION",
+        "=" * 62,
+        meta.get("description", ""),
+        "",
+        "-- chapters --",
+        chapters.strip(),
+        "",
+        "=" * 62,
+        "TAGS",
+        "=" * 62,
+        tags,
+        "",
+        "=" * 62,
+        "BLUESKY POST  (not posted — paste the link in yourself)",
+        "=" * 62,
+        bluesky,
+        f"({len(meta.get('bluesky', ''))} characters before the link)",
+        "",
+    ]
+
+    if open_items:
+        sections += ["=" * 62, "UNRESOLVED REVIEW ITEMS", "=" * 62]
+        sections += [f"  [{r.severity}] {r.kind}: {r.note}" for r in open_items]
+        sections.append("")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(sections), encoding="utf-8")
+    return out_path
