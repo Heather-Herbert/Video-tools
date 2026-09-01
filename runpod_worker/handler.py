@@ -68,12 +68,18 @@ def get_face_mesh():
 
 def s3():
     import boto3
+    from botocore.config import Config
+
+    # See remote.py: boto3 1.36+ sends CRC32 checksums by default, which R2
+    # and B2 reject. Harmless to disable on AWS.
     return boto3.client(
         "s3",
         endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
         region_name=os.environ.get("S3_REGION", "auto"),
+        config=Config(request_checksum_calculation="when_required",
+                      response_checksum_validation="when_required"),
     )
 
 
