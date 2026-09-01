@@ -20,6 +20,12 @@ temp_audio.wav
 *.srt
 youtube_metadata.txt
 
+# Episode working directories, if POLYCULE_EPISODES points inside the repo.
+episodes/
+
+# Your own thumbnail template artwork is yours, not the repo's.
+assets/templates/*.png
+
 # IDEs
 .idea/
 .vscode/

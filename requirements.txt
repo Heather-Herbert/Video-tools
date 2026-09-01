@@ -1,12 +1,25 @@
-# Core Dependencies
-openai-whisper
-moviepy>=2.0.0
-google-genai
-python-dotenv
+# --- pipeline core ----------------------------------------------------------
+faster-whisper          # transcription
+Pillow                  # graphics cards, thumbnail compositing
 numpy
-requests
-Pillow
-rembg
+openai                  # DeepSeek and OpenRouter clients (OpenAI-compatible)
 
-# Utility
-tqdm
+# --- thumbnail stage --------------------------------------------------------
+rembg                   # background removal for the cutout
+mediapipe               # face landmarks: blink, mouth and pose scoring
+onnxruntime             # rembg's inference backend
+
+# --- optional ---------------------------------------------------------------
+# Speaker labels. Large (pulls torch); skip it and the pipeline flags segments
+# for manual labelling instead.
+#pyannote.audio
+
+# --- legacy/ scripts only ---------------------------------------------------
+# The older standalone scripts in legacy/ still use these. Not needed for the
+# pipeline itself.
+#moviepy>=2.0.0
+#google-genai
+#openai-whisper
+
+# --- development ------------------------------------------------------------
+pytest
